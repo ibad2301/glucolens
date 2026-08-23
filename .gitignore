@@ -31,10 +31,14 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
 .env*.local
 
 # typescript
 *.tsbuildinfo
+
+# Claude session memory (agent-local, not app source)
+memory/
 
 # generated native folders
 /ios
