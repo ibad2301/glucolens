@@ -50,3 +50,4 @@ PORTFOLIO.md
 # generated native folders
 /ios
 /android
+supabase/.temp/
