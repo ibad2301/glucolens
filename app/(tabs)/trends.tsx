@@ -1,22 +1,26 @@
 import React, { useEffect, useState } from 'react';
 import {
-  View, Text, ScrollView, Pressable,
-  StyleSheet, Dimensions,
+  View, Text, ScrollView, Pressable, Modal,
+  StyleSheet, Dimensions, Platform,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LineChart } from 'react-native-gifted-charts';
+import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useAppStore } from '@/store/useAppStore';
 import { REFERENCE_RANGES, estimateHbA1c, CONTEXT_LABELS } from '@/constants';
 import {
   THEME_COLORS, THEME_STATUS_COLORS, THEME_STATUS_BG_COLORS, THEME_STATUS_TEXT_COLORS,
   TYPE, SPACE, SCREEN_PADDING, SECTION_GAP, THEME_RADIUS,
 } from '@/constants/theme';
-import { computeStats, toChartData, classifyGlucose, formatRange, formatGlucose, mgToMmol } from '@/utils/helpers';
+import { computeStats, toChartData, classifyGlucose, formatRange, formatGlucose, formatDate, mgToMmol } from '@/utils/helpers';
 import type { ReadingContext } from '@/types';
 
 const PERIODS = [7, 14, 30] as const;
-type Period = typeof PERIODS[number];
+type Period = typeof PERIODS[number] | 'custom';
+
+function startOfDay(d: Date): Date { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+function endOfDay(d: Date): Date { const x = new Date(d); x.setHours(23, 59, 59, 999); return x; }
 
 const SCREEN_W = Dimensions.get('window').width;
 const CHART_W = SCREEN_W - SPACE.space5 * 2 - 32;
@@ -28,9 +32,33 @@ export default function TrendsScreen() {
   const [period, setPeriod] = useState<Period>(7);
   const insets = useSafeAreaInsets();
 
-  useEffect(() => { loadReadings(period); }, [period]);
+  const [rangeSheetVisible, setRangeSheetVisible] = useState(false);
+  const [customStart, setCustomStart] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 7); return d; });
+  const [customEnd, setCustomEnd] = useState(() => new Date());
+  const [showAndroidStartPicker, setShowAndroidStartPicker] = useState(false);
+  const [showAndroidEndPicker, setShowAndroidEndPicker] = useState(false);
+
+  useEffect(() => {
+    if (period === 'custom') return; // custom range loads explicitly via handleApplyCustomRange
+    loadReadings(period);
+  }, [period]);
 
   if (!activePatient) return null;
+
+  function handleApplyCustomRange() {
+    loadReadings({ start: startOfDay(customStart).toISOString(), end: endOfDay(customEnd).toISOString() });
+    setPeriod('custom');
+    setRangeSheetVisible(false);
+  }
+
+  function onChangeStart(_event: DateTimePickerEvent, date?: Date) {
+    if (Platform.OS === 'android') setShowAndroidStartPicker(false);
+    if (date) setCustomStart(date);
+  }
+  function onChangeEnd(_event: DateTimePickerEvent, date?: Date) {
+    if (Platform.OS === 'android') setShowAndroidEndPicker(false);
+    if (date) setCustomEnd(date);
+  }
 
   const stats     = computeStats(readings, activePatient.condition);
   const chartData = toChartData(readings, activePatient.condition);
@@ -62,6 +90,7 @@ export default function TrendsScreen() {
 
   const normalLow  = ranges.fasting.low;
   const normalHigh = ranges.fasting.high;
+  const periodSub  = period === 'custom' ? 'custom range' : `last ${period}d`;
 
   return (
     <View style={styles.container}>
@@ -83,6 +112,16 @@ export default function TrendsScreen() {
               </Text>
             </Pressable>
           ))}
+          <Pressable
+            style={[styles.periodChip, period === 'custom' && styles.periodActive]}
+            onPress={() => setRangeSheetVisible(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Choose a custom date range"
+          >
+            <Text style={[styles.periodText, period === 'custom' && styles.periodTextActive]}>
+              Custom
+            </Text>
+          </Pressable>
         </View>
       </View>
 
@@ -177,7 +216,7 @@ export default function TrendsScreen() {
             color={stats.timeInRange >= 70 ? THEME_COLORS.normal : stats.timeInRange >= 50 ? THEME_COLORS.elevated : THEME_COLORS.high}
           />
           <MetricCard label="Average" value={stats.average ? `${toDisplay(stats.average)}` : '—'} sub={unit} color={THEME_COLORS.textPrimary} />
-          <MetricCard label="Readings" value={`${stats.readingCount}`} sub={`last ${period}d`} color={THEME_COLORS.textPrimary} />
+          <MetricCard label="Readings" value={`${stats.readingCount}`} sub={periodSub} color={THEME_COLORS.textPrimary} />
         </View>
 
         {contextStats.length > 0 && (
@@ -230,6 +269,53 @@ export default function TrendsScreen() {
         </View>
 
       </ScrollView>
+
+      <Modal
+        visible={rangeSheetVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setRangeSheetVisible(false)}
+      >
+        <Pressable style={styles.sheetBackdrop} onPress={() => setRangeSheetVisible(false)} />
+        <View style={[styles.sheetCard, { paddingBottom: insets.bottom + SPACE.space5 }]}>
+          <Text style={styles.sheetTitle}>Custom Range</Text>
+
+          <Text style={styles.fieldLabel}>Start date</Text>
+          {Platform.OS === 'ios' ? (
+            <DateTimePicker value={customStart} mode="date" display="default" maximumDate={customEnd} onChange={onChangeStart} />
+          ) : (
+            <>
+              <Pressable style={styles.dateField} onPress={() => setShowAndroidStartPicker(true)} accessibilityRole="button">
+                <Text style={styles.dateFieldText}>{formatDate(customStart.toISOString())}</Text>
+              </Pressable>
+              {showAndroidStartPicker && (
+                <DateTimePicker value={customStart} mode="date" display="default" maximumDate={customEnd} onChange={onChangeStart} />
+              )}
+            </>
+          )}
+
+          <Text style={[styles.fieldLabel, { marginTop: SPACE.space4 }]}>End date</Text>
+          {Platform.OS === 'ios' ? (
+            <DateTimePicker value={customEnd} mode="date" display="default" minimumDate={customStart} maximumDate={new Date()} onChange={onChangeEnd} />
+          ) : (
+            <>
+              <Pressable style={styles.dateField} onPress={() => setShowAndroidEndPicker(true)} accessibilityRole="button">
+                <Text style={styles.dateFieldText}>{formatDate(customEnd.toISOString())}</Text>
+              </Pressable>
+              {showAndroidEndPicker && (
+                <DateTimePicker value={customEnd} mode="date" display="default" minimumDate={customStart} maximumDate={new Date()} onChange={onChangeEnd} />
+              )}
+            </>
+          )}
+
+          <Pressable
+            style={({ pressed }) => [styles.sheetApplyBtn, pressed && styles.sheetApplyBtnPressed]}
+            onPress={handleApplyCustomRange}
+          >
+            <Text style={styles.sheetApplyBtnText}>Apply</Text>
+          </Pressable>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -284,4 +370,16 @@ const styles = StyleSheet.create({
   rangeValue:      { ...TYPE.body, fontWeight: '600', color: THEME_COLORS.primary },
   adaNote:         { backgroundColor: THEME_COLORS.primaryTint, borderRadius: THEME_RADIUS.md, padding: SPACE.space4 },
   adaNoteText:     { ...TYPE.footnote, color: THEME_COLORS.primary, lineHeight: 18 },
+
+  // Custom date range bottom sheet — same sheet-radius card treatment
+  // already used for forgot-password.tsx / reset-password.tsx.
+  sheetBackdrop:   { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)' },
+  sheetCard:       { backgroundColor: THEME_COLORS.surface, borderTopLeftRadius: THEME_RADIUS.sheet, borderTopRightRadius: THEME_RADIUS.sheet, padding: SCREEN_PADDING },
+  sheetTitle:      { ...TYPE.title3, color: THEME_COLORS.textPrimary, marginBottom: SPACE.space4 },
+  fieldLabel:      { ...TYPE.caption2, color: THEME_COLORS.textSecondary, marginBottom: SPACE.space2, textTransform: 'uppercase', letterSpacing: 0.6 },
+  dateField:       { minHeight: 52, justifyContent: 'center', borderWidth: 1.5, borderColor: THEME_COLORS.border, borderRadius: THEME_RADIUS.md, paddingHorizontal: SPACE.space4, backgroundColor: THEME_COLORS.background },
+  dateFieldText:   { ...TYPE.body, color: THEME_COLORS.textPrimary },
+  sheetApplyBtn:        { minHeight: 52, justifyContent: 'center', backgroundColor: THEME_COLORS.primary, borderRadius: THEME_RADIUS.md, alignItems: 'center', marginTop: SPACE.space6 },
+  sheetApplyBtnPressed: { backgroundColor: THEME_COLORS.primaryPressed },
+  sheetApplyBtnText:    { color: THEME_COLORS.textInverse, ...TYPE.headline },
 });

@@ -154,6 +154,68 @@ export function detectPatternFlags(
   return flags.slice(0, 3);
 }
 
+// ─── AGP-style time-in-range bands ───────────────────────────────────────────
+// Fixed international-consensus AGP thresholds (Battelino et al., 2019) — a
+// separate, absolute scale from the app's per-condition classifyGlucose(),
+// which stays exactly as-is for day-to-day reading status colors elsewhere.
+
+export type AgpBand = 'veryLow' | 'low' | 'target' | 'high' | 'veryHigh';
+
+export interface AgpBandBreakdown {
+  band: AgpBand;
+  pct: number; // 0–100, integer; all five sum to exactly 100 (or all 0 with no readings)
+}
+
+// Shared across every AGP renderer (the Visit Summary screen, the PDF
+// export) so the label text and color-by-status mapping never drift apart.
+export const AGP_BAND_LABELS: Record<AgpBand, string> = {
+  veryLow: 'Very Low', low: 'Low', target: 'Target', high: 'High', veryHigh: 'Very High',
+};
+export const AGP_BAND_STATUS: Record<AgpBand, GlucoseStatus> = {
+  veryLow: 'critical', low: 'low', target: 'normal', high: 'elevated', veryHigh: 'high',
+};
+
+const AGP_BAND_ORDER: AgpBand[] = ['veryLow', 'low', 'target', 'high', 'veryHigh'];
+
+function agpBandFor(valueMgDl: number): AgpBand {
+  if (valueMgDl < 54) return 'veryLow';
+  if (valueMgDl < 70) return 'low';
+  if (valueMgDl <= 180) return 'target';
+  if (valueMgDl <= 250) return 'high';
+  return 'veryHigh';
+}
+
+export function computeAgpBands(readings: GlucoseReading[]): AgpBandBreakdown[] {
+  if (!readings.length) return AGP_BAND_ORDER.map((band) => ({ band, pct: 0 }));
+
+  const counts: Record<AgpBand, number> = { veryLow: 0, low: 0, target: 0, high: 0, veryHigh: 0 };
+  for (const r of readings) counts[agpBandFor(r.value)]++;
+
+  // Largest-remainder rounding so the five displayed percentages always sum
+  // to exactly 100 — naive per-band Math.round() can drift by a point or two.
+  const raw = AGP_BAND_ORDER.map((band) => (counts[band] / readings.length) * 100);
+  const floored = raw.map(Math.floor);
+  const remainder = 100 - floored.reduce((a, b) => a + b, 0);
+  const byRemainder = raw
+    .map((v, i) => ({ i, frac: v - floored[i] }))
+    .sort((a, b) => b.frac - a.frac);
+  for (let k = 0; k < remainder; k++) floored[byRemainder[k].i]++;
+
+  return AGP_BAND_ORDER.map((band, i) => ({ band, pct: floored[i] }));
+}
+
+export function agpHeadline(bands: AgpBandBreakdown[]): string {
+  const pct = (b: AgpBand) => bands.find((x) => x.band === b)?.pct ?? 0;
+  const targetPct = pct('target');
+  const lowPct = pct('low') + pct('veryLow');
+  const highPct = pct('high') + pct('veryHigh');
+
+  if (targetPct >= 70) return `Well controlled — ${targetPct}% of readings in target range.`;
+  if (lowPct > 10 && lowPct >= highPct) return `Frequent lows — ${lowPct}% of readings fell below target.`;
+  if (highPct > 10) return `Runs high — ${highPct}% of readings exceeded target.`;
+  return `${targetPct}% of readings in target range.`;
+}
+
 // ─── Composition ──────────────────────────────────────────────────────────────
 
 export interface VisitSummary {
@@ -168,6 +230,7 @@ export interface VisitSummary {
   notableReadings: NotableReading[];
   targetRanges: ReferenceRanges;
   hypoCount: number;
+  agpBands: AgpBandBreakdown[];
 }
 
 export function computeVisitSummary(
@@ -193,5 +256,6 @@ export function computeVisitSummary(
     notableReadings: getNotableReadings(readings, patient.condition),
     targetRanges: REFERENCE_RANGES[patient.condition],
     hypoCount,
+    agpBands: computeAgpBands(readings),
   };
 }

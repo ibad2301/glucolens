@@ -3,11 +3,12 @@ import {
   View, Text, TextInput, Pressable, ScrollView,
   StyleSheet, KeyboardAvoidingView, Platform, Alert,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { useAppStore } from '@/store/useAppStore';
+import { getReading, getMostRecentReading } from '@/db/database';
 import { CONTEXT_LABELS, SYMPTOM_LABELS, MEAL_TYPE_LABELS } from '@/constants';
 import {
   THEME_COLORS, THEME_STATUS_COLORS, THEME_STATUS_BG_COLORS, THEME_STATUS_TEXT_COLORS,
@@ -24,11 +25,32 @@ const MEAL_TYPES = ['low_carb', 'normal', 'high_carb', 'sweet'] as const;
 
 type SymptomKey = typeof SYMPTOMS[number];
 
-export default function LogScreen() {
-  const { activePatient, addReading, unit, readings, loadReadings } = useAppStore();
-  const insets = useSafeAreaInsets();
+// Reverses the ' · ' composition handleSave() writes into a reading's
+// `notes` field, so editing an existing reading can restore its symptoms
+// and meal type into the form instead of just dumping the raw string in.
+function parseComposedNotes(raw: string | undefined): { notes: string; symptoms: SymptomKey[]; mealType: string } {
+  if (!raw) return { notes: '', symptoms: ['none'], mealType: '' };
+  let notes = '';
+  let symptoms: SymptomKey[] = ['none'];
+  let mealType = '';
+  for (const part of raw.split(' · ')) {
+    if (part.startsWith('Symptoms: ')) {
+      const keys = part.slice('Symptoms: '.length).split(', ').filter((k): k is SymptomKey => (SYMPTOMS as readonly string[]).includes(k));
+      if (keys.length) symptoms = keys;
+    } else if (part.startsWith('Meal: ')) {
+      const label = part.slice('Meal: '.length);
+      mealType = (Object.entries(MEAL_TYPE_LABELS).find(([, v]) => v === label)?.[0]) ?? '';
+    } else if (part.trim()) {
+      notes = part;
+    }
+  }
+  return { notes, symptoms, mealType };
+}
 
-  useEffect(() => { loadReadings(1); }, []);
+export default function LogScreen() {
+  const { activePatient, addReading, updateReading, unit, readings, loadReadings } = useAppStore();
+  const insets = useSafeAreaInsets();
+  const { editId } = useLocalSearchParams<{ editId?: string }>();
 
   const [value, setValue]       = useState('');
   const [context, setContext]   = useState<ReadingContext>('fasting');
@@ -37,6 +59,36 @@ export default function LogScreen() {
   const [notes, setNotes]       = useState('');
   const [notesFocused, setNotesFocused] = useState(false);
   const [saved, setSaved]       = useState(false);
+
+  useEffect(() => {
+    loadReadings(1);
+
+    if (editId) {
+      const existing = getReading(editId);
+      if (!existing) return;
+      setValue(String(unit === 'mmol/L' ? mgToMmol(existing.value) : Math.round(existing.value)));
+      setContext(existing.context);
+      const parsed = parseComposedNotes(existing.notes);
+      setNotes(parsed.notes);
+      setSymptoms(parsed.symptoms);
+      setMealType(parsed.mealType);
+      return;
+    }
+
+    // "Log same as usual": default the context (and meal type, if
+    // applicable) to whatever was logged last time, instead of always
+    // starting back at "fasting" — one less decision for a routine entry.
+    if (!activePatient) return;
+    const last = getMostRecentReading(activePatient.id);
+    if (!last) return;
+    setContext(last.context);
+    if (last.context === 'before_meal' || last.context === 'after_meal') {
+      setMealType(parseComposedNotes(last.notes).mealType);
+    }
+    // Only re-run if editId itself changes — re-running on `unit` changes
+    // would clobber whatever the user has since typed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editId]);
 
   // `numVal` is whatever the user typed, in the currently selected display unit.
   // Storage and clinical classification always happen in mg/dL, so everything
@@ -74,20 +126,33 @@ export default function LogScreen() {
       return;
     }
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    addReading({
-      // Always store in mg/dL, regardless of what unit the field was displaying —
-      // the conversion at input time is exactly what keeps storage/classification
-      // unit-agnostic everywhere else in the app.
-      value: numValMgDl,
-      unit: 'mg/dL',
-      context,
-      notes: [
-        notes.trim(),
-        symptoms.includes('none') ? '' : `Symptoms: ${symptoms.join(', ')}`,
-        mealType ? `Meal: ${MEAL_TYPE_LABELS[mealType as keyof typeof MEAL_TYPE_LABELS]}` : '',
-      ].filter(Boolean).join(' · ') || undefined,
-      recordedAt: new Date().toISOString(),
-    });
+    const composedNotes = [
+      notes.trim(),
+      symptoms.includes('none') ? '' : `Symptoms: ${symptoms.join(', ')}`,
+      mealType ? `Meal: ${MEAL_TYPE_LABELS[mealType as keyof typeof MEAL_TYPE_LABELS]}` : '',
+    ].filter(Boolean).join(' · ') || undefined;
+
+    if (editId) {
+      // recordedAt is intentionally left untouched — editing corrects a
+      // value/context/notes entry error, it doesn't re-timestamp it.
+      updateReading(editId, {
+        value: numValMgDl,
+        unit: 'mg/dL',
+        context,
+        notes: composedNotes,
+      });
+    } else {
+      addReading({
+        // Always store in mg/dL, regardless of what unit the field was displaying —
+        // the conversion at input time is exactly what keeps storage/classification
+        // unit-agnostic everywhere else in the app.
+        value: numValMgDl,
+        unit: 'mg/dL',
+        context,
+        notes: composedNotes,
+        recordedAt: new Date().toISOString(),
+      });
+    }
     setSaved(true);
     setTimeout(() => {
       setSaved(false); setValue(''); setNotes('');

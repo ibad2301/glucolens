@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { Session, User, AuthError } from '@supabase/supabase-js';
+import * as Linking from 'expo-linking';
 import { supabase } from '@/lib/supabase';
 
 interface AuthState {
@@ -14,6 +15,7 @@ interface AuthState {
   signIn: (email: string, password: string) => Promise<{ error: AuthError | null }>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<{ error: AuthError | null }>;
+  updatePassword: (password: string) => Promise<{ error: AuthError | null }>;
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -67,7 +69,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   resetPassword: async (email) => {
-    const { error } = await supabase.auth.resetPasswordForEmail(email);
+    // Recovery links land on app/reset-password.tsx, which parses the token
+    // out of the deep link and establishes a recovery session.
+    const redirectTo = Linking.createURL('/reset-password');
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+    return { error };
+  },
+
+  updatePassword: async (password) => {
+    const { error } = await supabase.auth.updateUser({ password });
     return { error };
   },
 }));

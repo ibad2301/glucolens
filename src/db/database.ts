@@ -23,8 +23,6 @@ export function initializeDatabase(): void {
       age         INTEGER NOT NULL,
       gender      TEXT NOT NULL,
       condition   TEXT NOT NULL,
-      weight      REAL,
-      height      REAL,
       created_at  TEXT NOT NULL,
       updated_at  TEXT NOT NULL
     );
@@ -38,12 +36,23 @@ export function initializeDatabase(): void {
       notes        TEXT,
       recorded_at  TEXT NOT NULL,
       created_at   TEXT NOT NULL,
+      synced       INTEGER NOT NULL DEFAULT 0,
       FOREIGN KEY (patient_id) REFERENCES patients(id) ON DELETE CASCADE
     );
 
     CREATE INDEX IF NOT EXISTS idx_readings_patient
       ON glucose_readings(patient_id, recorded_at DESC);
   `);
+
+  // CREATE TABLE IF NOT EXISTS above won't add `synced` to a glucose_readings
+  // table that already existed before this column was introduced — add it
+  // by hand for those installs. Every pre-existing local reading is, by
+  // definition, not yet in Supabase (readings sync didn't exist before this),
+  // so defaulting them to unsynced (0) is correct, not just a fallback.
+  const columns = db.getAllSync<{ name: string }>('PRAGMA table_info(glucose_readings)');
+  if (!columns.some((c) => c.name === 'synced')) {
+    db.execSync('ALTER TABLE glucose_readings ADD COLUMN synced INTEGER NOT NULL DEFAULT 0');
+  }
 }
 
 // ─── Patient Queries ─────────────────────────────────────────────────────────
@@ -52,12 +61,11 @@ export function savePatient(patient: PatientProfile): void {
   const db = getDb();
   db.runSync(
     `INSERT OR REPLACE INTO patients
-      (id, name, age, gender, condition, weight, height, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, name, age, gender, condition, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [
       patient.id, patient.name, patient.age, patient.gender,
-      patient.condition, patient.weight ?? null, patient.height ?? null,
-      patient.createdAt, patient.updatedAt,
+      patient.condition, patient.createdAt, patient.updatedAt,
     ]
   );
 }
@@ -84,8 +92,6 @@ function mapRowToPatient(row: any): PatientProfile {
     age:       row.age,
     gender:    row.gender,
     condition: row.condition,
-    weight:    row.weight ?? undefined,
-    height:    row.height ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -93,18 +99,34 @@ function mapRowToPatient(row: any): PatientProfile {
 
 // ─── Reading Queries ─────────────────────────────────────────────────────────
 
-export function saveReading(reading: GlucoseReading): void {
+export function saveReading(reading: GlucoseReading, synced: boolean = false): void {
   const db = getDb();
   db.runSync(
     `INSERT OR REPLACE INTO glucose_readings
-      (id, patient_id, value, unit, context, notes, recorded_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, patient_id, value, unit, context, notes, recorded_at, created_at, synced)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       reading.id, reading.patientId, reading.value, reading.unit,
       reading.context, reading.notes ?? null,
-      reading.recordedAt, reading.createdAt,
+      reading.recordedAt, reading.createdAt, synced ? 1 : 0,
     ]
   );
+}
+
+export function getUnsyncedReadings(patientId: string): GlucoseReading[] {
+  const db = getDb();
+  const rows = db.getAllSync<any>(
+    `SELECT * FROM glucose_readings WHERE patient_id = ? AND synced = 0 ORDER BY recorded_at ASC`,
+    [patientId]
+  );
+  return rows.map(mapRowToReading);
+}
+
+export function markReadingsSynced(ids: string[]): void {
+  if (!ids.length) return;
+  const db = getDb();
+  const placeholders = ids.map(() => '?').join(', ');
+  db.runSync(`UPDATE glucose_readings SET synced = 1 WHERE id IN (${placeholders})`, ids);
 }
 
 export function getReadings(patientId: string, days = 30): GlucoseReading[] {
@@ -120,9 +142,43 @@ export function getReadings(patientId: string, days = 30): GlucoseReading[] {
   return rows.map(mapRowToReading);
 }
 
+// Explicit start/end window (inclusive), for Trends' custom date range —
+// `getReadings` only supports a rolling day count back from now.
+export function getReadingsByDateRange(patientId: string, startISO: string, endISO: string): GlucoseReading[] {
+  const db = getDb();
+  const rows = db.getAllSync<any>(
+    `SELECT * FROM glucose_readings
+     WHERE patient_id = ? AND recorded_at >= ? AND recorded_at <= ?
+     ORDER BY recorded_at DESC`,
+    [patientId, startISO, endISO]
+  );
+  return rows.map(mapRowToReading);
+}
+
 export function deleteReading(id: string): void {
   const db = getDb();
   db.runSync('DELETE FROM glucose_readings WHERE id = ?', [id]);
+}
+
+// Fetches a single reading directly from SQLite, independent of whatever
+// day-window the store's in-memory `readings` array currently holds (Log
+// screen's own loadReadings(1) call would otherwise hide anything older).
+export function getReading(id: string): GlucoseReading | null {
+  const db = getDb();
+  const row = db.getFirstSync<any>('SELECT * FROM glucose_readings WHERE id = ?', [id]);
+  return row ? mapRowToReading(row) : null;
+}
+
+// Most recent reading regardless of day-window, so the Log screen can
+// default to "same as usual" without depending on whatever period is
+// currently loaded into the store.
+export function getMostRecentReading(patientId: string): GlucoseReading | null {
+  const db = getDb();
+  const row = db.getFirstSync<any>(
+    'SELECT * FROM glucose_readings WHERE patient_id = ? ORDER BY recorded_at DESC LIMIT 1',
+    [patientId]
+  );
+  return row ? mapRowToReading(row) : null;
 }
 
 function mapRowToReading(row: any): GlucoseReading {

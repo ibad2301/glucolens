@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, ScrollView, Pressable,
-  StyleSheet, RefreshControl, Animated,
+  StyleSheet, RefreshControl, Animated, Alert,
 } from 'react-native';
 import { router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -9,6 +9,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { type SFSymbol } from 'expo-symbols';
 import { Ionicons } from '@expo/vector-icons';
+import { Swipeable } from 'react-native-gesture-handler';
 import { useAppStore } from '@/store/useAppStore';
 import { fetchReadingsFromCloud } from '@/lib/sync';
 import { CONDITION_LABELS, estimateHbA1c } from '@/constants';
@@ -35,7 +36,7 @@ function hba1cStatusColor(hba1c: number) {
 }
 
 export default function DashboardScreen() {
-  const { activePatient, readings, loadReadings, unit } = useAppStore();
+  const { activePatient, readings, loadReadings, unit, removeReading } = useAppStore();
   const insets = useSafeAreaInsets();
 
   const [loading, setLoading] = useState(true);
@@ -93,6 +94,21 @@ export default function DashboardScreen() {
 
   const initials = activePatient.name
     .split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
+
+  function handleEditReading(id: string) {
+    router.push({ pathname: '/(tabs)/log', params: { editId: id } });
+  }
+
+  function handleDeleteReading(id: string) {
+    Alert.alert(
+      'Delete reading',
+      'Are you sure you want to delete this reading? This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => removeReading(id) },
+      ]
+    );
+  }
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
@@ -343,18 +359,38 @@ export default function DashboardScreen() {
             <Text style={styles.sectionTitle}>Recent Readings</Text>
             <View style={styles.recentCard}>
               {enriched.slice(0, 5).map((r, i, arr) => (
-                <View key={r.id} style={[styles.readingRow, i === arr.length - 1 && { borderBottomWidth: 0 }]}>
-                  <View style={[styles.readingDot, { backgroundColor: THEME_STATUS_COLORS[r.status] }]} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.readingValue}>{formatGlucose(r.value, unit)}</Text>
-                    <Text style={styles.readingMeta}>
-                      {contextLabel(r.context)} · {formatDateTime(r.recordedAt)}
-                    </Text>
-                  </View>
-                  <View style={[styles.statusBadge, { backgroundColor: THEME_STATUS_BG_COLORS[r.status] }]}>
-                    <Text style={[styles.statusText, { color: THEME_STATUS_TEXT_COLORS[r.status] }]}>{r.label}</Text>
-                  </View>
-                </View>
+                <Swipeable
+                  key={r.id}
+                  renderRightActions={() => (
+                    <Pressable
+                      style={styles.deleteAction}
+                      onPress={() => handleDeleteReading(r.id)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Delete reading"
+                    >
+                      <Icon ios="trash.fill" android="trash-outline" size={18} color={THEME_COLORS.textInverse} />
+                    </Pressable>
+                  )}
+                  overshootRight={false}
+                >
+                  <Pressable
+                    onPress={() => handleEditReading(r.id)}
+                    style={[styles.readingRow, i === arr.length - 1 && { borderBottomWidth: 0 }]}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Edit ${formatGlucose(r.value, unit)} ${contextLabel(r.context)} reading from ${formatDateTime(r.recordedAt)}`}
+                  >
+                    <View style={[styles.readingDot, { backgroundColor: THEME_STATUS_COLORS[r.status] }]} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.readingValue}>{formatGlucose(r.value, unit)}</Text>
+                      <Text style={styles.readingMeta}>
+                        {contextLabel(r.context)} · {formatDateTime(r.recordedAt)}
+                      </Text>
+                    </View>
+                    <View style={[styles.statusBadge, { backgroundColor: THEME_STATUS_BG_COLORS[r.status] }]}>
+                      <Text style={[styles.statusText, { color: THEME_STATUS_TEXT_COLORS[r.status] }]}>{r.label}</Text>
+                    </View>
+                  </Pressable>
+                </Swipeable>
               ))}
             </View>
           </>
@@ -518,11 +554,12 @@ const styles = StyleSheet.create({
   mealDeltaTextPending:  { ...TYPE.footnote, fontWeight: '600', color: THEME_COLORS.textSecondary },
 
   // Recent readings (single grouped card, hairline dividers)
-  recentCard:         { backgroundColor: THEME_COLORS.surface, borderRadius: THEME_RADIUS.lg, paddingHorizontal: SPACE.space4, marginBottom: SECTION_GAP, borderWidth: 1, borderColor: THEME_COLORS.border },
-  readingRow:         { flexDirection: 'row', alignItems: 'center', gap: SPACE.space3, paddingVertical: SPACE.space3, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: THEME_COLORS.border },
+  recentCard:         { backgroundColor: THEME_COLORS.surface, borderRadius: THEME_RADIUS.lg, paddingHorizontal: SPACE.space4, marginBottom: SECTION_GAP, borderWidth: 1, borderColor: THEME_COLORS.border, overflow: 'hidden' },
+  readingRow:         { flexDirection: 'row', alignItems: 'center', gap: SPACE.space3, paddingVertical: SPACE.space3, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: THEME_COLORS.border, backgroundColor: THEME_COLORS.surface },
   readingDot:         { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
   readingValue:       { ...TYPE.headline, color: THEME_COLORS.textPrimary },
   readingMeta:        { ...TYPE.footnote, color: THEME_COLORS.textSecondary, marginTop: 2 },
+  deleteAction:       { width: 72, alignItems: 'center', justifyContent: 'center', backgroundColor: THEME_COLORS.danger },
 
   // Log button
   logBtn:             { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACE.space2, height: 52, backgroundColor: THEME_COLORS.primary, borderRadius: THEME_RADIUS.md, marginTop: SPACE.space2 },

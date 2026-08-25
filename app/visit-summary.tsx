@@ -1,6 +1,6 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
-  View, Text, ScrollView, Pressable,
+  View, Text, ScrollView, Pressable, Alert, ActivityIndicator,
   StyleSheet, Dimensions,
 } from 'react-native';
 import { router } from 'expo-router';
@@ -14,8 +14,10 @@ import {
   THEME_COLORS, THEME_STATUS_COLORS, THEME_STATUS_BG_COLORS, THEME_STATUS_TEXT_COLORS,
   TYPE, SPACE, SCREEN_PADDING, SECTION_GAP, THEME_RADIUS,
 } from '@/constants/theme';
+import { Icon } from '@/components/Icon';
 import { formatDateTime, formatGlucose, formatGlucoseAmount, formatRange, mgToMmol } from '@/utils/helpers';
-import { computeVisitSummary } from '@/utils/visitSummary';
+import { computeVisitSummary, agpHeadline, AGP_BAND_LABELS, AGP_BAND_STATUS } from '@/utils/visitSummary';
+import { exportVisitSummaryPdf } from '@/lib/pdfExport';
 
 const WINDOW_DAYS = 30;
 const SCREEN_W = Dimensions.get('window').width;
@@ -24,13 +26,14 @@ const CHART_W = SCREEN_W - SPACE.space5 * 2 - 32;
 export default function VisitSummaryScreen() {
   const { activePatient, readings, loadReadings, unit } = useAppStore();
   const insets = useSafeAreaInsets();
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => { loadReadings(WINDOW_DAYS); }, []);
 
   if (!activePatient) return null;
 
   const summary = computeVisitSummary(activePatient, readings, WINDOW_DAYS);
-  const { stats, hba1cEstimate, chartData, contextInsights, patternFlags, notableReadings, targetRanges, hypoCount } = summary;
+  const { stats, hba1cEstimate, chartData, contextInsights, patternFlags, notableReadings, targetRanges, hypoCount, agpBands } = summary;
 
   const earliest = readings.length
     ? readings.reduce((min, r) => (r.recordedAt < min ? r.recordedAt : min), readings[0].recordedAt)
@@ -39,6 +42,21 @@ export default function VisitSummaryScreen() {
     ? Math.max(1, differenceInCalendarDays(new Date(), parseISO(earliest)) + 1)
     : WINDOW_DAYS;
   const windowLabel = readings.length ? `Last ${Math.min(WINDOW_DAYS, actualSpanDays)} days` : `Last ${WINDOW_DAYS} days`;
+
+  async function handleExportPdf() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      // Passes the exact same `summary` object already computed above for
+      // this render — the PDF can never show stale numbers relative to
+      // what's currently on screen, since there's only one computation.
+      await exportVisitSummaryPdf(activePatient!, summary, unit, windowLabel);
+    } catch (err) {
+      Alert.alert('Export failed', err instanceof Error ? err.message : 'Could not generate the PDF. Please try again.');
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const toDisplay = (mgDl: number) => (unit === 'mmol/L' ? mgToMmol(mgDl) : mgDl);
 
@@ -79,6 +97,26 @@ export default function VisitSummaryScreen() {
           </Text>
         </View>
 
+        {readings.length > 0 && (
+          <Pressable
+            style={({ pressed }) => [styles.exportBtn, pressed && styles.exportBtnPressed]}
+            onPress={handleExportPdf}
+            disabled={exporting}
+            accessibilityRole="button"
+            accessibilityLabel="Export this visit summary as a PDF to share or save"
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={styles.exportBtnTitle}>{exporting ? 'Generating…' : 'Export PDF'}</Text>
+              <Text style={styles.exportBtnDesc}>Share or save a doctor-ready PDF of this summary</Text>
+            </View>
+            {exporting ? (
+              <ActivityIndicator color={THEME_COLORS.primary} />
+            ) : (
+              <Icon ios="chevron.right" android="chevron-forward" size={16} color={THEME_COLORS.primary} />
+            )}
+          </Pressable>
+        )}
+
         {readings.length === 0 ? (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyText}>No readings in the last {WINDOW_DAYS} days.</Text>
@@ -115,6 +153,28 @@ export default function VisitSummaryScreen() {
                   <Text style={styles.synthesisText}>{f.render(unit)}</Text>
                 </View>
               ))}
+            </View>
+
+            <Text style={styles.sectionTitle}>Time in Range</Text>
+            <View style={styles.card}>
+              <Text style={styles.agpHeadline}>{agpHeadline(agpBands)}</Text>
+              <View style={styles.agpBarWrap}>
+                {agpBands.filter((b) => b.pct > 0).map((b) => (
+                  <View key={b.band} style={{ flex: b.pct, backgroundColor: THEME_STATUS_COLORS[AGP_BAND_STATUS[b.band]] }}>
+                    {b.pct >= 8 && (
+                      <Text style={styles.agpSegmentText} numberOfLines={1}>{b.pct}%</Text>
+                    )}
+                  </View>
+                ))}
+              </View>
+              <View style={styles.legendRow}>
+                {agpBands.map((b) => (
+                  <View key={b.band} style={styles.legendItem}>
+                    <View style={[styles.statusDot, { backgroundColor: THEME_STATUS_COLORS[AGP_BAND_STATUS[b.band]] }]} />
+                    <Text style={styles.legendText}>{AGP_BAND_LABELS[b.band]} {b.pct}%</Text>
+                  </View>
+                ))}
+              </View>
             </View>
 
             <Text style={styles.sectionTitle}>Glucose over time</Text>
@@ -253,6 +313,10 @@ const styles = StyleSheet.create({
   identityRow:      { marginBottom: SECTION_GAP },
   identityName:     { ...TYPE.headline, color: THEME_COLORS.textPrimary },
   identityMeta:     { ...TYPE.footnote, color: THEME_COLORS.textSecondary, marginTop: 2 },
+  exportBtn:        { flexDirection: 'row', alignItems: 'center', backgroundColor: THEME_COLORS.primaryTint, borderRadius: THEME_RADIUS.lg, padding: SPACE.space4, marginBottom: SECTION_GAP, gap: SPACE.space3 },
+  exportBtnPressed: { backgroundColor: THEME_COLORS.primaryTintStrong },
+  exportBtnTitle:   { ...TYPE.body, fontWeight: '600', color: THEME_COLORS.primary },
+  exportBtnDesc:    { ...TYPE.footnote, color: THEME_COLORS.primary, marginTop: 2 },
   emptyCard:        { backgroundColor: THEME_COLORS.surface, borderRadius: THEME_RADIUS.lg, padding: SPACE.space6, alignItems: 'center', borderWidth: 1, borderColor: THEME_COLORS.border },
   emptyText:        { ...TYPE.headline, color: THEME_COLORS.textPrimary, textAlign: 'center' },
   emptySub:         { ...TYPE.footnote, color: THEME_COLORS.textSecondary, textAlign: 'center', marginTop: 6 },
@@ -269,6 +333,12 @@ const styles = StyleSheet.create({
   synthesisText:    { flex: 1, ...TYPE.footnote, color: THEME_COLORS.primary, lineHeight: 18 },
   sectionTitle:     { ...TYPE.footnote, fontWeight: '700', color: THEME_COLORS.textPrimary, marginBottom: SPACE.space3, textTransform: 'uppercase', letterSpacing: 0.5 },
   card:             { backgroundColor: THEME_COLORS.surface, borderRadius: THEME_RADIUS.lg, padding: SPACE.space4, marginBottom: SECTION_GAP, borderWidth: 1, borderColor: THEME_COLORS.border },
+  agpHeadline:      { ...TYPE.body, fontWeight: '600', color: THEME_COLORS.textPrimary, marginBottom: SPACE.space3 },
+  agpBarWrap:       { flexDirection: 'row', height: 22, borderRadius: THEME_RADIUS.sm, overflow: 'hidden', backgroundColor: THEME_COLORS.border },
+  agpSegmentText:   { ...TYPE.caption1, fontWeight: '700', color: THEME_COLORS.textInverse, textAlign: 'center', lineHeight: 22 },
+  legendRow:        { flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.space3, marginTop: SPACE.space3 },
+  legendItem:       { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  legendText:       { ...TYPE.caption3, color: THEME_COLORS.textSecondary },
   emptyChart:       { height: 100, alignItems: 'center', justifyContent: 'center', padding: SPACE.space4 },
   emptyChartText:   { ...TYPE.body, color: THEME_COLORS.textTertiary, textAlign: 'center', lineHeight: 22 },
   notableRow:       { flexDirection: 'row', alignItems: 'center', paddingVertical: SPACE.space3, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: THEME_COLORS.border, gap: SPACE.space3 },

@@ -1,21 +1,66 @@
-import React from 'react';
-import { View, Text, ScrollView, Pressable, StyleSheet, Alert, Switch } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, ScrollView, Pressable, StyleSheet, Alert, Switch, Platform } from 'react-native';
 import { router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { format } from 'date-fns';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useAppStore } from '@/store/useAppStore';
+import { useReminderStore } from '@/store/useReminderStore';
 import { CONDITION_LABELS, REFERENCE_RANGES, estimateHbA1c } from '@/constants';
 import { THEME_COLORS, TYPE, SPACE, SCREEN_PADDING, SECTION_GAP, THEME_RADIUS } from '@/constants/theme';
 import { Icon } from '@/components/Icon';
 import { formatDate, computeStats, formatRange } from '@/utils/helpers';
 
+function timeToDate(hour: number, minute: number): Date {
+  const d = new Date();
+  d.setHours(hour, minute, 0, 0);
+  return d;
+}
+
+function showPermissionDeniedAlert() {
+  Alert.alert(
+    'Notifications disabled',
+    "GlucoLens can't send reminders without notification permission. You can enable it in Settings."
+  );
+}
+
 export default function ProfileScreen() {
   const { signOut } = useAuthStore();
   const { activePatient, readings, setActivePatient, unit, setUnit } = useAppStore();
+  const {
+    fastingEnabled, fastingHour, fastingMinute, setFastingEnabled, setFastingTime,
+    bedtimeEnabled, bedtimeHour, bedtimeMinute, setBedtimeEnabled, setBedtimeTime,
+    afterMealEnabled, setAfterMealEnabled,
+  } = useReminderStore();
   const insets = useSafeAreaInsets();
+  const [showAndroidFastingPicker, setShowAndroidFastingPicker] = useState(false);
+  const [showAndroidBedtimePicker, setShowAndroidBedtimePicker] = useState(false);
 
   if (!activePatient) return null;
+
+  async function handleToggleFasting(v: boolean) {
+    const ok = await setFastingEnabled(v);
+    if (v && !ok) showPermissionDeniedAlert();
+  }
+  async function handleToggleBedtime(v: boolean) {
+    const ok = await setBedtimeEnabled(v);
+    if (v && !ok) showPermissionDeniedAlert();
+  }
+  async function handleToggleAfterMeal(v: boolean) {
+    const ok = await setAfterMealEnabled(v);
+    if (v && !ok) showPermissionDeniedAlert();
+  }
+
+  function onChangeFastingTime(_event: DateTimePickerEvent, date?: Date) {
+    if (Platform.OS === 'android') setShowAndroidFastingPicker(false);
+    if (date) setFastingTime(date.getHours(), date.getMinutes());
+  }
+  function onChangeBedtimeTime(_event: DateTimePickerEvent, date?: Date) {
+    if (Platform.OS === 'android') setShowAndroidBedtimePicker(false);
+    if (date) setBedtimeTime(date.getHours(), date.getMinutes());
+  }
 
   const stats    = computeStats(readings, activePatient.condition);
   const hba1c    = stats.average ? estimateHbA1c(stats.average) : null;
@@ -91,6 +136,20 @@ export default function ProfileScreen() {
           <Icon ios="chevron.right" android="chevron-forward" size={16} color={THEME_COLORS.primary} />
         </Pressable>
 
+        {/* AI Insights entry point */}
+        <Pressable
+          style={({ pressed }) => [styles.visitSummaryBtn, pressed && styles.visitSummaryBtnPressed]}
+          onPress={() => router.push('/ai-insights')}
+          accessibilityRole="button"
+          accessibilityLabel="Open AI Insights, a summary of your recent glucose patterns"
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={styles.visitSummaryTitle}>AI Insights</Text>
+            <Text style={styles.visitSummaryDesc}>A summary of your recent patterns</Text>
+          </View>
+          <Icon ios="chevron.right" android="chevron-forward" size={16} color={THEME_COLORS.primary} />
+        </Pressable>
+
         {/* Profile details */}
         <Text style={styles.sectionTitle}>Profile details</Text>
         <View style={styles.detailCard}>
@@ -100,6 +159,19 @@ export default function ProfileScreen() {
           <DetailRow label="Condition"    value={CONDITION_LABELS[activePatient.condition]} highlight />
           <DetailRow label="Member since" value={formatDate(activePatient.createdAt)} last />
         </View>
+
+        <Pressable
+          style={({ pressed }) => [styles.visitSummaryBtn, pressed && styles.visitSummaryBtnPressed]}
+          onPress={() => router.push('/edit-profile')}
+          accessibilityRole="button"
+          accessibilityLabel="Edit profile: name, age, gender, and condition"
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={styles.visitSummaryTitle}>Edit Profile</Text>
+            <Text style={styles.visitSummaryDesc}>Update your name, age, gender, or condition</Text>
+          </View>
+          <Icon ios="chevron.right" android="chevron-forward" size={16} color={THEME_COLORS.primary} />
+        </Pressable>
 
         {/* Unit toggle */}
         <Text style={styles.sectionTitle}>Display settings</Text>
@@ -116,6 +188,81 @@ export default function ProfileScreen() {
               thumbColor="#fff"
             />
           </View>
+        </View>
+
+        {/* Reminders */}
+        <Text style={styles.sectionTitle}>Reminders</Text>
+        <View style={styles.settingsCard}>
+          <View style={styles.settingRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.settingLabel}>Fasting reading</Text>
+              <Text style={styles.settingDesc}>Daily reminder to log your fasting glucose</Text>
+            </View>
+            <Switch
+              value={fastingEnabled}
+              onValueChange={handleToggleFasting}
+              trackColor={{ false: THEME_COLORS.border, true: THEME_COLORS.primary }}
+              thumbColor="#fff"
+            />
+          </View>
+          {fastingEnabled && (
+            <View style={styles.timeRow}>
+              {Platform.OS === 'ios' ? (
+                <DateTimePicker value={timeToDate(fastingHour, fastingMinute)} mode="time" display="default" onChange={onChangeFastingTime} />
+              ) : (
+                <>
+                  <Pressable style={styles.timeField} onPress={() => setShowAndroidFastingPicker(true)} accessibilityRole="button">
+                    <Text style={styles.timeFieldText}>{format(timeToDate(fastingHour, fastingMinute), 'h:mm a')}</Text>
+                  </Pressable>
+                  {showAndroidFastingPicker && (
+                    <DateTimePicker value={timeToDate(fastingHour, fastingMinute)} mode="time" display="default" onChange={onChangeFastingTime} />
+                  )}
+                </>
+              )}
+            </View>
+          )}
+
+          <View style={[styles.settingRow, styles.settingRowDivider]}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.settingLabel}>After-meal reading</Text>
+              <Text style={styles.settingDesc}>Remind me ~2 hours after logging a before-meal reading</Text>
+            </View>
+            <Switch
+              value={afterMealEnabled}
+              onValueChange={handleToggleAfterMeal}
+              trackColor={{ false: THEME_COLORS.border, true: THEME_COLORS.primary }}
+              thumbColor="#fff"
+            />
+          </View>
+
+          <View style={[styles.settingRow, styles.settingRowDivider]}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.settingLabel}>Bedtime reading</Text>
+              <Text style={styles.settingDesc}>Daily reminder to log your bedtime glucose</Text>
+            </View>
+            <Switch
+              value={bedtimeEnabled}
+              onValueChange={handleToggleBedtime}
+              trackColor={{ false: THEME_COLORS.border, true: THEME_COLORS.primary }}
+              thumbColor="#fff"
+            />
+          </View>
+          {bedtimeEnabled && (
+            <View style={styles.timeRow}>
+              {Platform.OS === 'ios' ? (
+                <DateTimePicker value={timeToDate(bedtimeHour, bedtimeMinute)} mode="time" display="default" onChange={onChangeBedtimeTime} />
+              ) : (
+                <>
+                  <Pressable style={styles.timeField} onPress={() => setShowAndroidBedtimePicker(true)} accessibilityRole="button">
+                    <Text style={styles.timeFieldText}>{format(timeToDate(bedtimeHour, bedtimeMinute), 'h:mm a')}</Text>
+                  </Pressable>
+                  {showAndroidBedtimePicker && (
+                    <DateTimePicker value={timeToDate(bedtimeHour, bedtimeMinute)} mode="time" display="default" onChange={onChangeBedtimeTime} />
+                  )}
+                </>
+              )}
+            </View>
+          )}
         </View>
 
         {/* Target ranges */}
@@ -197,8 +344,12 @@ const styles = StyleSheet.create({
   detailValue:    { ...TYPE.body, fontWeight: '500', color: THEME_COLORS.textPrimary, flex: 1, textAlign: 'right' },
   settingsCard:   { backgroundColor: THEME_COLORS.surface, borderRadius: THEME_RADIUS.lg, paddingHorizontal: SPACE.space4, marginBottom: SECTION_GAP, borderWidth: 1, borderColor: THEME_COLORS.border },
   settingRow:     { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, gap: SPACE.space3 },
+  settingRowDivider: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: THEME_COLORS.border },
   settingLabel:   { ...TYPE.body, fontWeight: '500', color: THEME_COLORS.textPrimary },
   settingDesc:    { ...TYPE.footnote, color: THEME_COLORS.textSecondary, marginTop: 2 },
+  timeRow:        { alignItems: 'flex-start', paddingBottom: 14 },
+  timeField:      { minHeight: 40, justifyContent: 'center', paddingHorizontal: SPACE.space3, borderRadius: THEME_RADIUS.sm, backgroundColor: THEME_COLORS.background, borderWidth: 1, borderColor: THEME_COLORS.border },
+  timeFieldText:  { ...TYPE.callout, color: THEME_COLORS.textPrimary },
   adaNote:        { backgroundColor: THEME_COLORS.primaryTint, borderRadius: THEME_RADIUS.md, padding: SPACE.space4, marginBottom: SECTION_GAP },
   adaNoteText:    { ...TYPE.footnote, color: THEME_COLORS.primary, lineHeight: 18 },
   signOutBtn:     { minHeight: 52, justifyContent: 'center', borderWidth: 1.5, borderColor: THEME_COLORS.danger, borderRadius: THEME_RADIUS.md, alignItems: 'center', marginBottom: SECTION_GAP },

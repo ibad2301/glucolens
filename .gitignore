@@ -34,11 +34,18 @@ yarn-error.*
 .env
 .env*.local
 
+# load-test seed output — real (if fake-domain) account credentials, never committed
+scripts/.load-test-accounts.json
+.load-test-accounts.json
+
 # typescript
 *.tsbuildinfo
 
 # Claude session memory (agent-local, not app source)
 memory/
+
+# personal portfolio material — not for public/repo distribution
+PORTFOLIO.md
 
 # generated native folders
 /ios

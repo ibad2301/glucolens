@@ -30,7 +30,12 @@ CREATE TABLE IF NOT EXISTS public.glucose_readings (
   context      TEXT NOT NULL CHECK (context IN ('fasting', 'before_meal', 'after_meal', 'bedtime', 'random')),
   notes        TEXT,
   recorded_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- The app's local SQLite row id for this reading, sent so pushes can be
+  -- upserted (idempotent) instead of blind-inserted. NULL for any row
+  -- inserted before this column existed — a unique index still allows
+  -- multiple NULLs in Postgres, so that's compatible, not backfilled.
+  client_id    TEXT
 );
 
 -- ─── Indexes ──────────────────────────────────────────────────
@@ -44,6 +49,11 @@ CREATE INDEX IF NOT EXISTS idx_readings_patient_id
 
 CREATE INDEX IF NOT EXISTS idx_readings_user_id
   ON public.glucose_readings(user_id, recorded_at DESC);
+
+-- UNIQUE: syncReadingsToCloud() upserts with onConflict: 'client_id',
+-- which requires a unique constraint on this column in Postgres.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_readings_client_id
+  ON public.glucose_readings(client_id);
 
 -- ─── Updated_at trigger ───────────────────────────────────────
 CREATE OR REPLACE FUNCTION update_updated_at()

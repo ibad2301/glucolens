@@ -14,8 +14,6 @@ export interface PatientProfile {
   age: number;
   gender: Gender;
   condition: DiabetesCondition;
-  weight?: number; // kg
-  height?: number; // cm
   createdAt: string; // ISO date
   updatedAt: string; // ISO date
 }
